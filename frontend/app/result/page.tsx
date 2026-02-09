@@ -32,22 +32,48 @@ export default function ResultPage() {
       return
     }
     setTicketText(ticket)
-    // Simulate API call to analyze ticket
-    setTimeout(() => {
-      setResults({
-        churnRisk: {
-          probability: 0.72,
-          label: "High",
-        },
-        sentiment: {
-          score: 0.35,
-          label: "Negative",
-        },
-        category: "Billing Issue",
-        priority: "High",
-      })
-      setLoading(false)
-    }, 1000)
+    // Call backend API to get category classification
+    ;(async () => {
+      try {
+        const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000")
+        const resp = await fetch(`${API_URL}/predict`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: ticket }),
+        })
+        if (!resp.ok) throw new Error(`API error ${resp.status}`)
+        const data = await resp.json()
+        // Keep other simulated insights, but use real category from backend
+        setResults({
+          churnRisk: {
+            probability: 0.72,
+            label: "High",
+          },
+          sentiment: {
+            score: 0.35,
+            label: "Negative",
+          },
+          category: data.category || "Unknown",
+          priority: "High",
+        })
+      } catch (err) {
+        console.error("Prediction error:", err)
+        setResults({
+          churnRisk: {
+            probability: 0.0,
+            label: "Low",
+          },
+          sentiment: {
+            score: 0.5,
+            label: "Neutral",
+          },
+          category: "Unknown",
+          priority: "Medium",
+        })
+      } finally {
+        setLoading(false)
+      }
+    })()
   }, [searchParams, router])
 
   const getRiskColor = (label: string) => {
