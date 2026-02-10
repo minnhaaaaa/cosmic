@@ -12,6 +12,13 @@ class PredictResponse(BaseModel):
     probabilities: Dict[str, float]
     churn_probability: Optional[float] = None
     churn_label: Optional[str] = None
+    priority_score: Optional[float] = None
+    priority: Optional[str] = None
+    # optional sentiment fields returned from predict for UI convenience
+    sentiment_label: Optional[str] = None
+    sentiment_score: Optional[float] = None
+    churn_probability: Optional[float] = None
+    churn_label: Optional[str] = None
 
 
 class TrainExample(BaseModel):

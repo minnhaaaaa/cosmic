@@ -109,14 +109,36 @@ def predict(request: PredictRequest):
         try:
             if sentiment_analyzer is not None:
                 sentiment_data = sentiment_analyzer.analyze(text)
-                # sentiment_data['sentiment'] is 'positive' or 'negative'
-                if sentiment_data.get("sentiment") == "negative" and keyword_signal > 0.0:
-                    sentiment_signal = float(sentiment_data.get("confidence", 0.0))
-                else:
-                    sentiment_signal = 0.0
         except Exception:
-            # if sentiment fails, keep signal at 0 and continue
+            # if sentiment fails, keep sentiment_data None and continue
             logger.warning("Sentiment analysis failed during churn computation", exc_info=True)
+
+        # Suggestion phrases: treat as mild positive intent (override noisy sentiment)
+        SUGGESTION_KEYWORDS = [
+            "please add", "add", "could you", "would you", "would love", "feature request", "please implement",
+        ]
+        suggestion_present = any(kw in lowered for kw in SUGGESTION_KEYWORDS)
+
+        # If sentiment_data exists, possibly override for suggestions
+        if sentiment_data is not None:
+            s_label = sentiment_data.get("sentiment")
+            s_conf = float(sentiment_data.get("confidence", 0.0))
+            # If this looks like a suggestion and model scored it as negative or low-confidence,
+            # override to a moderate positive sentiment to avoid mis-classifying feature requests.
+            if suggestion_present and (s_label == "negative" or s_conf < 0.6):
+                sentiment_data = {
+                    "text": text,
+                    "sentiment": "positive",
+                    "confidence": 0.56,
+                    "positive_score": 0.56,
+                    "negative_score": 0.44,
+                }
+
+        # derive sentiment_signal used for churn (negative contribution only)
+        if sentiment_data is not None and sentiment_data.get("sentiment") == "negative" and keyword_signal > 0.0:
+            sentiment_signal = float(sentiment_data.get("confidence", 0.0))
+        else:
+            sentiment_signal = 0.0
 
         # Category signal mapping (business risk per category)
         category_map = {
@@ -134,6 +156,20 @@ def predict(request: PredictRequest):
         cat = result.get("category", "").lower()
         category_signal = category_map.get(cat, 0.1)
 
+        # --- Post-process category overrides based on strong keywords ---
+        TECH_KEYWORDS = [
+            "stuck", "freeze", "freezing", "crash", "crashes", "crashing",
+            "not working", "keeps getting stuck", "keep getting stuck", "app", "phone",
+            "mobile", "unresponsive", "hang", "hangs",
+        ]
+        if any(k in lowered for k in TECH_KEYWORDS):
+            # If text contains clear technical issue signals, prefer Technical category
+            if cat != "technical":
+                logger.info("Overriding category to Technical based on keywords")
+            cat = "technical"
+            result["category"] = "Technical"
+            category_signal = category_map.get("technical", category_signal)
+
         # Combine into churn risk
         churn_risk = (0.5 * sentiment_signal) + (0.3 * category_signal) + (0.2 * keyword_signal)
         # clamp 0..1
@@ -147,12 +183,83 @@ def predict(request: PredictRequest):
         else:
             churn_label = "Low"
 
+        # ------------------ Priority computation ------------------
+        # Sentiment severity: negative sentiment confidence, for positive use a reduced multiplier
+        sentiment_severity = 0.0
+        sentiment_confidence = 0.0
+        if sentiment_data is not None:
+            sentiment_confidence = float(sentiment_data.get("confidence", 0.0))
+            if sentiment_data.get("sentiment") == "negative":
+                sentiment_severity = sentiment_confidence
+            else:
+                # positive sentiment should still influence priority moderately
+                POSITIVE_SEVERITY_MULTIPLIER = 0.9
+                sentiment_severity = sentiment_confidence * POSITIVE_SEVERITY_MULTIPLIER
+
+        # Category priority mapping (business urgency)
+        CATEGORY_PRIORITY = {
+            "billing": 0.9,
+            "account": 1.0,
+            "refund request": 0.85,
+            "technical": 0.7,
+            "feature": 0.3,
+            "general": 0.2,
+        }
+        category_priority = CATEGORY_PRIORITY.get(cat, 0.2)
+
+        # Urgency keywords
+        URGENT_KEYWORDS = [
+            "urgent", "immediately", "asap",
+            "not working", "down", "failed",
+            "blocked", "cannot access",
+        ]
+        urgency_signal = 1.0 if any(k in lowered for k in URGENT_KEYWORDS) else 0.0
+
+        # Confidence multiplier
+        confidence_multiplier = 1.0
+        if sentiment_confidence > 0.8:
+            confidence_multiplier = 1.1
+
+        # Priority score
+        priority_score = (
+            0.4 * sentiment_severity +
+            0.35 * category_priority +
+            0.25 * urgency_signal
+        )
+        priority_score *= confidence_multiplier
+        priority_score = min(priority_score, 1.0)
+
+        if priority_score >= 0.75:
+            priority_label = "P1 – Critical"
+        elif priority_score >= 0.5:
+            priority_label = "P2 – High"
+        elif priority_score >= 0.3:
+            priority_label = "P3 – Medium"
+        else:
+            priority_label = "P4 – Low"
+            
+        if sentiment_data is not None and sentiment_data.get("sentiment") == "positive":
+            priority_score = 0.0
+            priority_label = "P4 – Low"
+            logger.info(f"Overridden to P4 due to positive sentiment for text: '{text[:50]}...'")
+        # include sentiment fields in predict response for UI
+        sentiment_label_out = None
+        sentiment_score_out = None
+        if sentiment_data is not None:
+            sentiment_label_out = sentiment_data.get("sentiment")
+            # prefer positive_score if available
+            sentiment_score_out = float(sentiment_data.get("positive_score") if sentiment_data.get("positive_score") is not None else sentiment_data.get("confidence", 0.0))
+
         return PredictResponse(
             category=result["category"],
             probabilities=result["probabilities"],
             label=result["category"],
             churn_probability=float(churn_risk),
             churn_label=churn_label,
+            priority_score=float(priority_score),
+            priority=priority_label,
+            sentiment_label=sentiment_label_out,
+            sentiment_score=sentiment_score_out,
         )
     except HTTPException:
         raise

@@ -15,7 +15,8 @@ interface AnalysisResult {
     label: "Positive" | "Neutral" | "Negative"
   }
   category: string
-  priority: "High" | "Medium" | "Low"
+  priority: string
+  priorityScore?: number
 }
 
 export default function ResultPage() {
@@ -57,21 +58,24 @@ export default function ResultPage() {
         const predictData = await predictResp.json()
         const sentimentData = await sentimentResp.json()
         
-        // Determine sentiment label from API response
-        const sentimentLabel = sentimentData.sentiment === "positive" ? "Positive" : 
-                              sentimentData.sentiment === "negative" ? "Negative" : "Neutral"
-        
+        // Prefer sentiment coming from predict if available (keeps UI consistent with priority)
+        const sentimentLabelFromPredict = predictData.sentiment_label
+        const sentimentScoreFromPredict = predictData.sentiment_score
+        const sentimentLabel = sentimentLabelFromPredict ? (sentimentLabelFromPredict === "positive" ? "Positive" : (sentimentLabelFromPredict === "negative" ? "Negative" : "Neutral")) : (sentimentData.sentiment === "positive" ? "Positive" : (sentimentData.sentiment === "negative" ? "Negative" : "Neutral"))
+        const sentimentScore = sentimentScoreFromPredict ?? sentimentData.positive_score
+
         setResults({
           churnRisk: {
             probability: predictData.churn_probability ?? 0,
             label: predictData.churn_label ?? "Low",
           },
           sentiment: {
-            score: sentimentData.positive_score,
+            score: sentimentScore,
             label: sentimentLabel,
           },
           category: predictData.category || "Unknown",
-          priority: "High",
+          priority: predictData.priority || "P4 – Low",
+          priorityScore: predictData.priority_score ?? 0,
         })
       } catch (err) {
         console.error("API error:", err)
@@ -106,8 +110,9 @@ export default function ResultPage() {
   }
 
   const getPriorityColor = (priority: string) => {
-    if (priority === "High") return "text-red-400 bg-red-950"
-    if (priority === "Medium") return "text-yellow-400 bg-yellow-950"
+    if (priority.startsWith("P1")) return "text-red-400 bg-red-950"
+    if (priority.startsWith("P2")) return "text-orange-400 bg-orange-950"
+    if (priority.startsWith("P3")) return "text-yellow-400 bg-yellow-950"
     return "text-green-400 bg-green-950"
   }
 
