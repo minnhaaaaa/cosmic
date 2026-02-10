@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+import logging
 from fastapi.middleware.cors import CORSMiddleware
 from .models.ticket_classifier import TicketClassifier
 from .schemas import PredictRequest, PredictResponse, TrainRequest, TrainResponse
@@ -19,6 +20,10 @@ app.add_middleware(
 )
 
 classifier = TicketClassifier()
+
+# basic logging for debugging predict flows
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 
 def initial_train():
@@ -51,7 +56,8 @@ def predict(request: PredictRequest):
         raise HTTPException(status_code=400, detail="Empty text")
     try:
         result = classifier.predict(text)
-        return PredictResponse(category=result["category"], probabilities=result["probabilities"])
+        logger.info("Predict request: %s -> %s", text, result)
+        return PredictResponse(category=result["category"], probabilities=result["probabilities"], label=result["category"])
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

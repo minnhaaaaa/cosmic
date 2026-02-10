@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 
 class PredictRequest(BaseModel):
@@ -8,6 +8,7 @@ class PredictRequest(BaseModel):
 
 class PredictResponse(BaseModel):
     category: str
+    label: Optional[str] = None
     probabilities: Dict[str, float]
 
 
